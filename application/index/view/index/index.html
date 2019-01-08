@@ -1,0 +1,384 @@
+<html lang="zh">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="format-detection" content="telephone=no">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=0, minimum-scale=1.0, maximum-scale=1.0">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta content="yes" name="apple-mobile-web-app-capable">
+    <meta content="yes" name="apple-touch-fullscreen">
+    <meta name="full-screen" content="yes">
+    <meta content="default" name="apple-mobile-web-app-status-bar-style">
+    <meta name="screen-orientation" content="portrait">
+    <meta name="browsermode" content="application">
+    <meta name="msapplication-tap-highlight" content="no">
+    <meta name="x5-orientation" content="portrait">
+    <meta name="x5-fullscreen" content="true">
+    <meta name="x5-page-mode" content="app">
+    <base target="_blank">
+    <title>会话_一对一聊天</title>
+    {load href="/static/index/css/bootstrap.min.css"}
+    {load href="/static/index/css/chat.css"}
+    {load href="/static/index/js/jquery.min.js"}
+    {load href="/static/index/layer/layer.js"}
+</head>
+<script>
+    $(function() {
+        ws = new WebSocket("ws://" + document.domain + ":7272");
+        //连接
+        ws.onopen = onopen;
+        //接收到消息 
+        ws.onmessage = function(e){
+            onmessage(e);
+        }
+        //断开连接
+        ws.onclose = function() {
+            //向所有人广播，类型为outlogin，所有人的在线列表中去除当前客户端
+            console.log("连接关闭，定时重连");
+        };
+        //出现错误
+        ws.onerror = function() {
+            console.log("出现错误");
+        };
+
+        //连接时响应，让客户端输入名称，并向服务器发送类型为login的信息；
+        function onopen(){
+            var user_id = $("#user_id").html();
+            var user_name = $("#user_name").html();
+            var login_message = '{"type":"login", "user_id":"'+ user_id +'", "user_name":"'+ user_name +'"}';
+            var get_linkman = '{"type":"linkman"}';
+            console.log('websocket握手成功，发送登录数据:' + login_message);
+            ws.send(login_message);
+            ws.send(get_linkman);
+        }
+
+        //服务端发送消息
+        function onmessage(e){
+            var data = eval("("+e.data+")");
+            switch(data['type']){
+                //登录信息，有两种情况，
+                //一种是有新客户端登录，当前客户端收到登录客户端的消息并更新用户列表
+                //另一种是当前客户端登录成功，提示当前客户端登录成功的消息并获取用户列表
+                case 'login':
+                    login_show(data);
+                    user_list_add(data);
+                    break;
+                case 'online_login':
+                    user_list_add(data, 'login');
+                    break;
+                //登录失败
+                case 'login_error':
+                    layer.msg(data['msg']);
+                    setTimeout(function(){
+                        window.location.href = '{:url("index/login")}';
+                    },1000);
+                    break;
+                //已联系列表
+                case 'linkman':
+                    var rels = $("#rels");
+                    var str = '';
+                    for(let value in data['linkman_list']){
+                        str += '<li class="rel-item" id="'+ value +'">' + data['linkman_list'][value] + '</li>';
+                    }
+                    rels.append(str);
+                    break;
+                //收到了其他客户端的消息（如果当前聊天窗口是本客户端，则添加聊天记录）
+                case 'say':
+                    var to_client_id = $("#chat_user").attr('user_id');
+                    if(to_client_id == data['send_user_id']){
+                        //添加聊天记录
+                        add_message_list(data, 'left')
+                    }
+                    break;
+                //收到消息提示
+                case 'prompt':
+                    var to_client_id = $("#chat_user").attr('user_id');
+                    if(to_client_id == data['send_user_id']){ 
+                        //是当前联系的客户端，则只判断是否在列表中，在则不处理，不在则添加
+                        var old_show_client = $("#rels").children("#"+data['send_user_id']).html();
+                        if(old_show_client == undefined){
+                            var str = '<li class="rel-item" id="' + data['send_user_id'] + '">' + data['send_user_name'] + '</li>';
+                            $("#rels").append(str);
+                        }
+                    }else{
+                        //不是当前联系的客户端
+                        //添加列表提示
+                        var rel_tab_html = $("#rel-tab").html();
+                        $("#rel-tab").html(rel_tab_html + '(有新消息)');
+                        //判断是否已存在于列表中
+                        var old_show_client = $("#rels").children("#"+data['send_user_id']).html();
+                        if(old_show_client == undefined){ //联系列表中没有此人
+                            var str = '<li class="rel-item" id="' + data['send_user_id'] + '">' + data['send_user_name'] + '(有新消息)</li>';
+                            $("#rels").append(str);
+                        }else{
+                            $("#rels").children("#"+ data['send_user_id']).html(data['send_user_name']+'(有新消息)');
+                        }
+                    }
+                    break;
+                //聊天内容（选择客户端之后）
+                case 'content':
+                    //清空聊天记录
+                    $("#msgs").html('');
+                    //添加当前聊天记录
+                    for(let value in data['content']){
+                        var to_user_id = $("#chat_user").attr('user_id');
+                        if(data['content'][value]['send_user_id'] == to_user_id){ //别人发给我的
+                            add_message_list(data['content'][value])
+                        }else{
+                            add_message_list(data['content'][value], 'right')
+                        }
+                    }
+                    break;
+                case 'outlogin':
+                    //将退出客户端从列表中移除
+                    remove_outlogin_user(data);
+                    break;
+                case 'ping':
+                    console.log(data);
+                    break;
+            }
+        }
+
+        // 登录广播
+        function login_show(data){
+            var msgs = $("#msgs");
+            var str = '<div class="msg min time" id="histStart">"'+ data['user_name'] +'"上线</div>'
+            msgs.append(str)
+        }
+        
+        // 退出登录广播
+        function outlogin_show(data){ 
+            var msgs = $("#msgs");
+            var str = '<div class="msg min time" id="histStart">"'+ data['user_name'] +'"下线了</div>'
+            msgs.append(str)
+        }
+
+        //移除已下线的会员
+        function remove_outlogin_user(data){
+            var rel = $("#"+data['user_id']);
+            rel.remove();
+        }
+        
+        
+        // 用户列表更新
+        function user_list_add(data, type='common'){
+            var hots = $("#hots");
+            if(type == 'login'){
+                var str = '';
+                for(let value in data['user_list']){
+                    console.log(value);
+                    if(data['user_list'][value] == data['user_name']){
+                        $("#myself").html(data['user_list'][value]);
+                    }else{
+                        str += '<li class="rel-item" id="'+ value +'">'+ data['user_list'][value] +'</li>'
+                    }
+                }
+            }else{
+                if(data['user_name'] != $("#user_name").html()){
+                    var str = '<li class="rel-item" id="'+ data['user_id'] +'">'+ data['user_name'] +'</li>'
+                }
+            }
+            hots.append(str);
+        }
+
+    
+        //选择用户聊天
+        var rel_item = $(".rel-item"),
+        hots = $("#hots");
+        $("#hots").on('click', '.rel-item', function(){
+            console.log($(this).html())
+            var chat_user = $("#chat_user");
+            var str = "<span id='chat_user_span' style='color:white; font-size:20px;'>"+$(this).html()+"</span>";
+            chat_user.html(str);
+            chat_user.attr('user_id', $(this).attr('id'));
+            //向服务端请求发送聊天记录或未读消息
+            $content_message = '{"type":"content", "to_user_id":"' + $(this).attr('id') + '"}';
+            ws.send($content_message);
+        })
+        $("#rels").on('click', '.rel-item', function(){
+            var chat_user = $("#chat_user");
+            if($(this).html().indexOf('有新消息') >= 0){
+                //有‘有新消息’这四个字
+                var name = $(this).html().substring(0,$(this).html().length-6);
+                //将会员的有新消息标识删除
+                $(this).html(name);
+            }else{
+                var name = $(this).html();
+            }
+            var str = "<span id='chat_user_span' style='color:white; font-size:20px;'>"+name+"</span>";
+            chat_user.html(str);
+            chat_user.attr('user_id', $(this).attr('id'));
+            //向服务端请求发送聊天记录或未读消息
+            $content_message = '{"type":"content", "to_user_id":"' + $(this).attr('id') + '"}';
+            ws.send($content_message);
+            
+        })
+        
+        // 添加聊天记录
+        function add_message_list(data, type='left'){
+            if(type == 'left'){
+                //别人发消息给自己
+                var str = '<div class="msg robot"><div class="msg-left" worker="">';
+                    str += '<div class="msg-host photo" style="background-image: url(../Images/head.png)">'+data['client_name']+'</div>';
+                    str += '<div class="msg-ball" title="'+ data['time'] +'">'+data['content']+'</div>';
+                    str += '</div></div>';
+            }else{
+                //自己发消息给别人
+                var str = '<div class="msg guest"><div class="msg-right">';
+                    str += '<div class="msg-host headDefault"></div>';
+                    str += '<div class="msg-ball" title="今天 17:52:06">'+data['content']+'</div>';
+                    str += '</div></div>';
+            }
+            $("#msgs").append(str);
+        }
+
+        //向对方发送消息
+        $("#saymessage").click(function(){
+            //获取数据
+            var say_val = $("#text").val();
+            var say_user = $("#chat_user_span").html();
+            var say_user_id = $("#chat_user").attr('user_id');
+            if(say_user_id == undefined){
+                layer.msg('请选择发送方！');
+                return;
+            }
+            //发送
+            var say_message = '{"type":"say", "receive_user_id":"'+say_user_id+'", "content":"'+say_val.replace(/"/g, '\\"').replace(/\n/g,'\\n').replace(/\r/g, '\\r')+'"}'
+            ws.send(say_message);
+            //清空输入框
+            $("#text").val('');
+            $("#text").focus();
+            //添加聊天记录
+            var data = Array;
+            data['content'] = say_val;
+            data['time'] = time_fat();
+            add_message_list(data, 'right');
+        });
+    
+        $("#out_login").click(function(){
+            window.location.href = '{:url("index/out_login")}'
+        })
+        
+    })
+
+
+    
+</script>
+
+<body lang="zh">
+    <div class="abs cover contaniner">
+        <div class="abs cover pnl">
+            <div class="top pnl-head" id="chat_user"></div>
+            <div class="abs br pnl-btn" id="out_login" style="background-color: rgb(202, 32, 89); color: rgb(255, 255, 255); float: right; ">退出</div>
+            <div class="abs cover pnl-body" id="pnlBody">
+                <div class="abs cover pnl-left">
+                    <div class="abs cover pnl-msgs scroll" id="show">
+                        <!-- <div class="msg min time" id="histStart">加载历史消息</div> -->
+                        <div class="pnl-list" id="hists">
+                            <!-- 历史消息 -->
+                        </div>
+                        <div class="pnl-list" id="msgs">
+                            <!-- <div class="msg robot">
+                                <div class="msg-left" worker="小龙">
+                                    <div class="msg-host photo" style="background-image: url(../Images/head.png)"></div>
+                                    <div class="msg-ball" title="今天 17:52:06">123</div>
+                                </div>
+                            </div>
+                            <div class="msg guest">
+                                <div class="msg-right">
+                                    <div class="msg-host headDefault"></div>
+                                    <div class="msg-ball" title="今天 17:52:06">你好</div>
+                                </div>
+                            </div> -->
+                        </div>
+                        <div class="pnl-list hide" id="unreadLine">
+                            <div class="msg min time unread">未读消息</div>
+                        </div>
+                    </div>
+                    <div class="abs bottom pnl-text">
+                        <div class="abs top pnl-warn" id="pnlWarn">
+                            <div class="fl btns rel pnl-warn-free">
+                                <img src="../Images/icon/Smile.png" class="kh warn-btn" title="表情" id="emojiBtn" />
+                                <img src="../Images/icon/pic.png" class="kh warn-btn" title="截屏" id="emojiBtn" />
+                                <img src="../Images/icon/camera.png" class="kh warn-btn" title="图片" id="emojiBtn" />
+                                <img src="../Images/icon/edit.png" class="kh warn-btn" title="保存" id="emojiBtn" />
+                            </div>
+                        </div>
+                        <div class="abs cover pnl-input">
+                            <textarea class="scroll" id="text" name="say_message" wrap="hard" placeholder="在此输入文字信息..."></textarea>
+                            <div class="abs atcom-pnl scroll hide" id="atcomPnl">
+                                <ul class="atcom" id="atcom"></ul>
+                            </div>
+                        </div>
+                        <div class="abs br pnl-btn" id="saymessage" style="background-color: rgb(32, 196, 202); color: rgb(255, 255, 255); float: right;">发送</div>
+                        
+                        <div class="pnl-support" id="copyright"><span id="myself"></span></div>
+                    </div>
+                </div>
+                <div class="abs right pnl-right">
+                    <div class="slider-container hide"></div>
+                    <div class="pnl-right-content">
+                        <div class="pnl-tabs">
+                            <div class="tab-btn active" id="hot-tab">在线列表</div>
+                            <div class="tab-btn" id="rel-tab">联系列表</div>
+                        </div>
+                        <div class="pnl-hot">
+                            <ul class="rel-list unselect" id="hots">
+                                <!-- <li class="rel-item">这是一个问题，这是一个问题？</li> -->
+                            </ul>
+                        </div>
+                        <div class="pnl-rel" style="display: none;">
+                            <ul class="rel-list unselect" id="rels">
+                                <!-- <li class="rel-item">这是一个问题，这是一个问题？</li> -->
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="user_id" style="display:none;">{$user_id}</div>
+    <div id="user_name" style="display:none;">{$user_name}</div>
+</body>
+</html>
+
+<script>
+$('#hot-tab').click(function (e) {
+    $('#rel-tab').removeClass('active');
+    $(this).addClass('active');
+
+    $('.pnl-hot').attr('style','display: true;');
+    $('.pnl-rel').attr('style','display: none;');
+}); 
+
+$('#rel-tab').click(function (e) {
+    $('#hot-tab').removeClass('active');
+    $(this).addClass('active');
+    $(this).html('联系列表');
+
+    $('.pnl-hot').attr('style','display: none;');
+    $('.pnl-rel').attr('style','display: true;');
+}); 
+
+//时间格式化
+function time_fat(){
+    var d=new Date();
+    var year=d.getFullYear();
+    var month=change(d.getMonth()+1);
+    var day=change(d.getDate());
+    var hour=change(d.getHours());
+    var minute=change(d.getMinutes());
+    var second=change(d.getSeconds());
+    return year+'-'+month+'-'+day+' '+hour+':'+minute+':'+second;
+}
+//时间格式化附属方法
+function change(t){
+    if(t<10){
+        return "0"+t;
+    }else{
+        return t;
+    }
+}
+</script>
